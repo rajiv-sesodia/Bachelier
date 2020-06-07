@@ -10,6 +10,7 @@ TO DO: add a regularisation function to the weights
 """
 
 import numpy as np
+from numpy.core.umath_tests import inner1d
 from RegressionHelper import ActivationFunctions
 from RegressionHelper import readWeightsAndBiases
 from RegressionHelper import writeWeightsAndBiases
@@ -19,7 +20,7 @@ from RegressionHelper import writeFeedForwardCheck
 # One of my first Neural Networks
 class NeuralNetwork:
     
-    def __init__(self, N, alpha = 1):
+    def __init__(self, N, L2 = 0, alpha = 1):
         # L is the number of layers in the neural network
         # N is an array containing the number of nodes in each layer
         self.L = N.shape[0]
@@ -27,6 +28,7 @@ class NeuralNetwork:
         self.af = ActivationFunctions('sigmoid', alpha)
         self.phi = self.af.phi 
         self.dphi = self.af.dphi
+        self.L2 = L2
 
         
     def initialise(self, weightsAndBiasesFile=''):
@@ -53,6 +55,7 @@ class NeuralNetwork:
         for l in range(1,self.L):
             self.w.append(np.random.normal(0.0,1.0,(self.N[l-1],self.N[l])))
             self.b.append(np.random.normal(0.0,1.0,self.N[l]))
+
                
     def feedForward(self, X):                
         
@@ -91,20 +94,35 @@ class NeuralNetwork:
         # and updating weights MUST be done AFTER the derivatives are calculated,
         # as the latter depends on the former             
         for l in reversed(range(1,self.L)):
-            dcdw = a[l-1].T.dot(dcdz[l])
+            dcdw = a[l-1].T.dot(dcdz[l]) + self.L2*2.0*self.w[l]
             dcdb = np.sum(dcdz[l], axis = 0)
             self.w[l] -= eta * dcdw
             self.b[l] -= eta * dcdb
+        
+    
+    def calcSplitLoss(self, X, Y):
+        zTemp, aTemp = self.feedForward(X)
+        loss1 = np.sum(np.square(Y-aTemp[self.L-1]))
+        
+        loss2 = 0
+        for l in range(self.L):
+            loss2 += self.L2* np.sum(np.square(self.w[l]))
+
             
+        return loss1, loss2
+    
     
     def calcLoss(self, X, Y):
         zTemp, aTemp = self.feedForward(X)
-        loss =  np.sum(np.square(Y-aTemp[self.L-1]))
+        loss = np.sum(np.square(Y-aTemp[self.L-1]))
+        
+        for l in range(self.L):
+            loss += self.L2* np.sum(np.square(self.w[l]))
             
         return loss
     
      
-    def fit(self, eta, epochs, X, Y, batchSize, loss, weightsAndBiasesFile='', diagnosticsFile=''):
+    def fit(self, eta, L2, epochs, X, Y, batchSize, loss, stdsc, weightsAndBiasesFile='', diagnosticsFile=''):
         rgen = np.random.RandomState(1)
         
         for epoch in range(epochs):
@@ -127,11 +145,9 @@ class NeuralNetwork:
         
             # check error
             if epoch % 100 == 0:
-                temp = self.calcLoss(X,Y)
-                print('epoch = ', epoch, 'loss = ',temp, 'eta = ', eta)
-                loss.append(temp)
-                eta = eta * 0.995
-                
+                loss1, loss2 = self.calcSplitLoss(X,Y)
+                print('epoch = ', epoch, 'loss1 = ',loss1, 'loss2 = ', loss2, 'eta = ', eta)
+                loss.append([epoch, loss1 + loss2])
 
         if weightsAndBiasesFile:
             writeWeightsAndBiases(self.w, self.b, weightsAndBiasesFile)
@@ -141,7 +157,39 @@ class NeuralNetwork:
             writeGradientCheck(error_w, error_b, diagnosticsFile) 
             error_a = self.feedForwardCheck(X[0])
             writeFeedForwardCheck(error_a, diagnosticsFile)
+            file = open(diagnosticsFile, 'a', newline='')
+            np.savetxt(file, loss, delimiter=',')
+            for l in range(1,self.L):
+                np.savetxt(file, self.w[l], delimiter=',')
+                np.savetxt(file, self.b[l], delimiter=',')
+            file.close()
 
+
+                
+    def gradient(self, eta, X, Y, stdsc):
+        
+        # calc dcdz
+        z, a = self.feedForward(X)
+        dcdz = self.calc_dcdz(a, z, Y)         
+        
+        # derivative
+        dcda = dcdz[1].dot(self.w[1].T)
+        dyda = []
+        for m in range(X.shape[0]):
+            dy = a[self.L-1][m] - Y[m]
+            dy2 = np.resize(inner1d(dy,dy),(dy.shape[0],1))
+            dyda.append(np.divide(dy,dy2).dot(np.resize(dcda[m], (1, dcda.shape[1])))*0.5)
+            
+            
+        # re-scale the derivatives
+        for m in range(X.shape[0]):
+            for j in range(dyda[m].shape[1]):
+                for i in range(dyda[m].shape[0]):
+                    dyda[m][i][j] /= np.sqrt(stdsc.var_[j])
+        
+        return dyda
+    
+    
 
     def backPropGradientCheck(self, eta, z, a, y):
                 
@@ -151,12 +199,11 @@ class NeuralNetwork:
         # calculating derivatives of the cost (c) function w.r.t weights (w), i.e. (dcdw) and bias (b), i.e. (dcdb) 
         # and updating weights MUST be done AFTER the derivatives are calculated,
         # as the latter depends on the former             
-        dcdw = [a[self.L-2].T.dot(dcdz[self.L-1])]
+        dcdw = [a[self.L-2].T.dot(dcdz[self.L-1]) + self.L2*2.0*self.w[self.L-1]]
         dcdb = [np.sum(dcdz[self.L-1], axis = 0)]
         for l in reversed(range(1,self.L-1)):
-            dcdw.insert(0, a[l-1].T.dot(dcdz[l]))
+            dcdw.insert(0, a[l-1].T.dot(dcdz[l]) + self.L2*2.0*self.w[l])
             dcdb.insert(0, np.sum(dcdz[l], axis = 0))
-
         
         dcdw.insert(0,0)
         dcdb.insert(0,0)
